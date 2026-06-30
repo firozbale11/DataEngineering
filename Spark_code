@@ -1,0 +1,34 @@
+from pyspark.sql import functions as F
+from transforms.api import transform, Input, Output
+
+@transform(
+    null_check_output=Output("ri.foundry.main.dataset.<your-output-rid>"),
+    consolidated_customers=Input("ri.foundry.main.dataset.954009c7-dc20-43bb-9c2a-ea593c9b93ca"),
+    orders_office_goods = Input("ri.foundry.main.dataset.860c2809-a544-4d89-bcaf-6f00c74f3e40"),
+    order_transactions = Input("ri.foundry.main.dataset.fe6146b1-a0db-4c0f-9d9d-46aa7a721402"),
+)
+def compute(consolidated_customers,orders_office_goods,order_transactions, null_check_output):
+    inputs = {
+        "consolidated_customers":consolidated_customers,
+        "orders_office_goods":orders_office_goods,
+        "order_transactions":order_transactions
+    }
+
+    all_summaries  = []
+    for dataset_name, dataset_input in inputs.items():
+        df = dataset_input.dataframe()
+        total_count = df.count()
+
+        for col_name in df.columns:
+            null_count = df.where(F.col(col_name).isNull()).count()
+            all_summaries.append((dataset_name, col_name, null_count, total_count))
+
+    # Use the Spark session from the first dataframe
+    spark = consolidated_customers.dataframe().sparkSession
+    summary_df = spark.createDataFrame(
+        all_summaries,
+        schema=["dataset_name", "column_name", "null_count", "total_count"]
+    )
+
+    null_check_output.write_dataframe(summary_df)
+   
