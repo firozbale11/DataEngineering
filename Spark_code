@@ -23,7 +23,7 @@ def compute(consolidated_customers,orders_office_goods,order_transactions, null_
             null_count = df.where(F.col(col_name).isNull()).count()
             all_summaries.append((dataset_name, col_name, null_count, total_count))
 
-    # Use the Spark session from the first dataframe
+    # Use the Spark session from the first dataframe to initiate the spark session
     spark = consolidated_customers.dataframe().sparkSession
     summary_df = spark.createDataFrame(
         all_summaries,
