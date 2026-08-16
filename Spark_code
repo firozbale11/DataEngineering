@@ -1,34 +1,85 @@
 from pyspark.sql import functions as F
-from transforms.api import transform, Input, Output
+from transforms.api import transform_df, Input, Output
+from pyspark.sql import window as W
 
-@transform(
-    null_check_output=Output("ri.foundry.main.dataset.<your-output-rid>"),
+
+@transform_df(
+    Output("ri.foundry.main.dataset.<your-output-rid>"),  # Output is positional, NOT a keyword argument
     consolidated_customers=Input("ri.foundry.main.dataset.954009c7-dc20-43bb-9c2a-ea593c9b93ca"),
-    orders_office_goods = Input("ri.foundry.main.dataset.860c2809-a544-4d89-bcaf-6f00c74f3e40"),
-    order_transactions = Input("ri.foundry.main.dataset.fe6146b1-a0db-4c0f-9d9d-46aa7a721402"),
+    orders_office_goods=Input("ri.foundry.main.dataset.860c2809-a544-4d89-bcaf-6f00c74f3e40"),
+    order_transactions=Input("ri.foundry.main.dataset.fe6146b1-a0db-4c0f-9d9d-46aa7a721402"),
 )
-def compute(consolidated_customers,orders_office_goods,order_transactions, null_check_output):
+def compute(ctx, consolidated_customers, orders_office_goods, order_transactions):
+    # Inputs are already PySpark DataFrames — no .dataframe() needed
     inputs = {
-        "consolidated_customers":consolidated_customers,
-        "orders_office_goods":orders_office_goods,
-        "order_transactions":order_transactions
+        "consolidated_customers": consolidated_customers,
+        "orders_office_goods": orders_office_goods,
+        "order_transactions": order_transactions,
     }
 
-    all_summaries  = []
-    for dataset_name, dataset_input in inputs.items():
-        df = dataset_input.dataframe()
+    all_summaries = []
+    for dataset_name, df in inputs.items():
         total_count = df.count()
 
         for col_name in df.columns:
             null_count = df.where(F.col(col_name).isNull()).count()
             all_summaries.append((dataset_name, col_name, null_count, total_count))
 
-    # Use the Spark session from the first dataframe to initiate the spark session
-    spark = consolidated_customers.dataframe().sparkSession
-    summary_df = spark.createDataFrame(
+    # Use ctx.spark_session to create a new DataFrame
+    summary_df = ctx.spark_session.createDataFrame(
         all_summaries,
         schema=["dataset_name", "column_name", "null_count", "total_count"]
     )
 
-    null_check_output.write_dataframe(summary_df)
-   
+    # Just return the DataFrame — @transform_df writes it automatically
+    #return summary_df
+    #)
+    #converting date columns to timestamps
+    orders_office_goods = orders_office_goods.withColumn(
+        "dueDateTime", F.col("dueDateTime").cast("timestamp"))
+    
+    order_transactions = order_transactions.withColumn(
+        "order_due_date", F.col("order_due_date").cast("timestamp")
+
+    )
+    
+    bureau_joined  = order_transactions.join(
+        consolidated_customers,consolidated_customers['bureau_customer_id']==order_transactions["customer_id"],
+        how = "left"
+    ).select(
+        consolidated_customers["consolidated_customer_id"],
+        consolidated_customers["customer_name"],
+        order_transactions["order_id"],
+        order_transactions["order_due_date"],
+        order_transactions["status"],
+        order_transactions["assignee"],
+        order_transactions["quantity"],
+        order_transactions["item_name"],
+        order_transactions["unit_price"],
+        order_transactions["days_until_due"],
+        F.lit("bureau_transaction").alias("source"),
+    )
+
+    office_joined = orders_office_goods.join(
+        consolidated_customers, orders_office_goods["customer_id"]==consolidated_customers["officegoods_customer_id"],
+        how  = "left"
+           ).select(
+            consolidated_customers["consolidated_customer_id"],
+        consolidated_customers["customer_name"],
+        orders_office_goods["orderId"].alias("order_id"),
+        orders_office_goods["dueDateTime"].alias("order_due_date"),
+        orders_office_goods["status"],
+        orders_office_goods["assignee"],
+        orders_office_goods["quantity"],
+        orders_office_goods["item_name"],
+        orders_office_goods["unit_price"],
+        orders_office_goods["days_until_due"],
+        F.lit("office_goods").alias("source")
+           )
+    #now we will join both the tables 
+    combined = office_joined.unionByName(bureau_joined)
+    
+    #SCD Type 1 :Overwrite with latest record - this I have put here to specify what kind of scd type it is 
+
+    
+
